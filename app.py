@@ -151,7 +151,7 @@ def parsear_pdf_a_df(pdf_file, password=None):
         elif x_val <= LOWER_LIMIT:
             return "CARGO"
         else:
-            # Si el promedio está en el rango intermedio, forzamos a "CARGO" (puedes ajustar esta lógica)
+            # Si el promedio está en el rango intermedio, forzamos a "CARGO" (ajústalo según necesites)
             return "CARGO"
 
     if not df.empty:
@@ -205,6 +205,31 @@ def main():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             status_text.text("¡Procesamiento completado!")
+
+    # --- Footer: Información del Desarrollador ---
+    footer = """
+    <style>
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: #f1f1f1;
+        color: black;
+        text-align: center;
+        padding: 10px;
+        font-size: 0.9em;
+    }
+    .footer a {
+        color: blue;
+        text-decoration: underline;
+    }
+    </style>
+    <div class="footer">
+        Desarrollado por <a href="https://www.linkedin.com/in/humbertosilvabaltazar/" target="_blank">Humberto Silva Baltazar</a>
+    </div>
+    """
+    st.markdown(footer, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
