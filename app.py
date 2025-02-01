@@ -15,7 +15,7 @@ from io import BytesIO
 PATRON_FECHA = re.compile(r'^\d{1,2}/[A-Z]{3}')
 PATRON_MONTO = re.compile(r'(\d{1,3}(?:,\d{3})*\.\d{2})')
 
-# Límites para clasificar transacciones (ajusta estos valores si es necesario)
+# Límites para clasificar transacciones (ajusta estos valores según tus necesidades)
 LOWER_LIMIT = 417.3665  # Si el promedio de coordenadas es menor o igual a este valor => CARGO
 UPPER_LIMIT = 424.75    # Si el promedio es mayor o igual a este valor => ABONO
 
@@ -70,7 +70,7 @@ def parsear_pdf_a_df(pdf_file, password=None):
                 "Fecha": fecha_operacion,     # p.e. "13/FEB"
                 "Tipo de movimiento": " ".join(tipo_movimiento).strip(),
                 "Monto": monto,
-                "x_monto": x_monto,          # Usado para clasificación
+                "x_monto": x_monto,          # Se usa para la clasificación
                 "Descripcion": desc
             })
 
@@ -82,7 +82,7 @@ def parsear_pdf_a_df(pdf_file, password=None):
                 w = words[i]
                 txt = w["text"].strip()
 
-                # 2.1) Si el token coincide con un formato de fecha ("13/FEB")
+                # 2.1) Si el token coincide con el formato de fecha ("13/FEB") => inicio de un nuevo movimiento
                 if PATRON_FECHA.match(txt):
                     guardar_registro()
                     fecha_operacion = txt
@@ -90,13 +90,11 @@ def parsear_pdf_a_df(pdf_file, password=None):
                     monto = None
                     x_monto = None
                     descripcion_acumulada = []
-                    
-                    # A veces el siguiente token también es fecha (p.ej., liquidación), se salta
+
+                    # Omitir todas las siguientes palabras que sean fechas (por ejemplo, fecha de liquidación)
                     j = i + 1
-                    if j < len(words):
-                        next_txt = words[j]["text"].strip()
-                        if PATRON_FECHA.match(next_txt):
-                            j += 1
+                    while j < len(words) and PATRON_FECHA.match(words[j]["text"].strip()):
+                        j += 1
 
                     # Buscar el primer token que contenga un monto
                     temp_tipo = []
@@ -123,20 +121,22 @@ def parsear_pdf_a_df(pdf_file, password=None):
                         tipo_movimiento = temp_tipo
                         i = j
                 else:
-                    # 2.2) Agregar tokens a la descripción (omitiendo tokens como "Referencia..." y montos exactos)
+                    # 2.2) Para tokens que no inician un nuevo movimiento:
+                    # Omitir tokens que empiecen con "Referencia" o que sean montos exactos
                     if re.match(r'(?i)^referencia', txt):
                         i += 1
                         continue
                     if re.fullmatch(PATRON_MONTO, txt):
                         i += 1
                         continue
+                    # Agregar el token a la descripción
                     descripcion_acumulada.append(txt)
                     i += 1
 
     # Guardar el último registro
     guardar_registro()
 
-    # 3) Crear el DataFrame y agregar el año a la fecha: "13/FEB/2024"
+    # 3) Crear el DataFrame y agregar el año a la fecha (por ejemplo, "13/FEB/2024")
     df = pd.DataFrame(data)
     if not df.empty:
         df["Fecha"] = df["Fecha"] + "/" + found_year
@@ -151,7 +151,7 @@ def parsear_pdf_a_df(pdf_file, password=None):
         elif x_val <= LOWER_LIMIT:
             return "CARGO"
         else:
-            # Puedes ajustar esta lógica; por defecto se forzará a "CARGO"
+            # Si el promedio está en el rango intermedio, forzamos a "CARGO" (puedes ajustar esta lógica)
             return "CARGO"
 
     if not df.empty:
@@ -208,4 +208,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
