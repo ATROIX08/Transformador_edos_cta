@@ -14,9 +14,12 @@ from io import BytesIO
 # --- Parámetros, patrones y constantes ---
 PATRON_FECHA = re.compile(r'^\d{1,2}/[A-Z]{3}')
 PATRON_MONTO = re.compile(r'(\d{1,3}(?:,\d{3})*\.\d{2})')
-LOWER_LIMIT = 417.3665  # Si x_monto <= LOWER_LIMIT => CARGO
-UPPER_LIMIT = 424.75    # Si x_monto >= UPPER_LIMIT => ABONO
 
+# Límites para clasificar transacciones (ajusta estos valores si es necesario)
+LOWER_LIMIT = 417.3665  # Si el promedio de coordenadas es menor o igual a este valor => CARGO
+UPPER_LIMIT = 424.75    # Si el promedio es mayor o igual a este valor => ABONO
+
+# Mapa para convertir "02" a "FEB", "03" a "MAR", etc. (para nombrar la hoja)
 MONTH_MAP = {
     "01": "ENE", "02": "FEB", "03": "MAR", "04": "ABR",
     "05": "MAY", "06": "JUN", "07": "JUL", "08": "AGO",
@@ -29,15 +32,17 @@ def parsear_pdf_a_df(pdf_file, password=None):
     Recibe un archivo PDF (tipo BytesIO o similar) y opcionalmente una contraseña.
     Devuelve:
       - Un DataFrame con columnas: Fecha, Tipo de movimiento, Monto, Descripcion y Categoría.
-      - Un nombre sugerido para la hoja (por ejemplo, 'FEB_2024').
+      - Un nombre sugerido para la hoja (por ejemplo, 'FEB_2024'), basado en la fecha de la 2ª página.
     """
     data = []
     sheet_name = None
     found_year = None
 
+    # 1) Extraer la fecha de la 2ª página para el nombre de la hoja
     with pdfplumber.open(pdf_file, password=password) as pdf:
         if len(pdf.pages) >= 2:
             page2_text = pdf.pages[1].extract_text() or ""
+            # Ejemplo: "DEL 13/02/2024 AL 12/03/2024"
             match_periodo = re.search(r'DEL\s+(\d{1,2}/\d{2}/\d{4})\s+AL', page2_text)
             if match_periodo:
                 fecha_inicial = match_periodo.group(1)  # Ej: "13/02/2024"
@@ -50,30 +55,34 @@ def parsear_pdf_a_df(pdf_file, password=None):
         if not found_year:
             found_year = "0000"
 
-        # Variables para el procesamiento de transacciones
-        fecha_operacion = None
-        tipo_movimiento = []
-        monto = None
-        x_monto = None
-        descripcion_acumulada = []
+    # 2) Parsear las transacciones usando pdfplumber.extract_words()
+    fecha_operacion = None
+    tipo_movimiento = []
+    monto = None
+    x_monto = None
+    descripcion_acumulada = []
 
-        def guardar_registro():
-            if fecha_operacion and tipo_movimiento and monto:
-                desc = " ".join(descripcion_acumulada).strip()
-                data.append({
-                    "Fecha": fecha_operacion,
-                    "Tipo de movimiento": " ".join(tipo_movimiento).strip(),
-                    "Monto": monto,
-                    "x_monto": x_monto,
-                    "Descripcion": desc
-                })
+    def guardar_registro():
+        """Guarda el registro actual si está completo."""
+        if fecha_operacion and tipo_movimiento and monto:
+            desc = " ".join(descripcion_acumulada).strip()
+            data.append({
+                "Fecha": fecha_operacion,     # p.e. "13/FEB"
+                "Tipo de movimiento": " ".join(tipo_movimiento).strip(),
+                "Monto": monto,
+                "x_monto": x_monto,          # Usado para clasificación
+                "Descripcion": desc
+            })
 
-        for page in pdf.pages:
+    with pdfplumber.open(pdf_file, password=password) as pdf:
+        for page_index, page in enumerate(pdf.pages):
             words = page.extract_words()
             i = 0
             while i < len(words):
                 w = words[i]
                 txt = w["text"].strip()
+
+                # 2.1) Si el token coincide con un formato de fecha ("13/FEB")
                 if PATRON_FECHA.match(txt):
                     guardar_registro()
                     fecha_operacion = txt
@@ -81,7 +90,15 @@ def parsear_pdf_a_df(pdf_file, password=None):
                     monto = None
                     x_monto = None
                     descripcion_acumulada = []
+                    
+                    # A veces el siguiente token también es fecha (p.ej., liquidación), se salta
                     j = i + 1
+                    if j < len(words):
+                        next_txt = words[j]["text"].strip()
+                        if PATRON_FECHA.match(next_txt):
+                            j += 1
+
+                    # Buscar el primer token que contenga un monto
                     temp_tipo = []
                     found_m = False
                     while j < len(words):
@@ -90,7 +107,10 @@ def parsear_pdf_a_df(pdf_file, password=None):
                         match_m = re.search(PATRON_MONTO, txt2)
                         if match_m:
                             monto = match_m.group(1)
-                            x_monto = w2["x0"]
+                            # Calcula el promedio de x0 y x1 para una mejor determinación de posición
+                            x0 = w2.get("x0", 0)
+                            x1 = w2.get("x1", 0)
+                            x_monto = (x0 + x1) / 2
                             found_m = True
                             tipo_movimiento = temp_tipo
                             i = j
@@ -98,10 +118,12 @@ def parsear_pdf_a_df(pdf_file, password=None):
                         else:
                             temp_tipo.append(txt2)
                             j += 1
+
                     if not found_m:
                         tipo_movimiento = temp_tipo
                         i = j
                 else:
+                    # 2.2) Agregar tokens a la descripción (omitiendo tokens como "Referencia..." y montos exactos)
                     if re.match(r'(?i)^referencia', txt):
                         i += 1
                         continue
@@ -110,14 +132,18 @@ def parsear_pdf_a_df(pdf_file, password=None):
                         continue
                     descripcion_acumulada.append(txt)
                     i += 1
-        guardar_registro()
 
+    # Guardar el último registro
+    guardar_registro()
+
+    # 3) Crear el DataFrame y agregar el año a la fecha: "13/FEB/2024"
     df = pd.DataFrame(data)
     if not df.empty:
         df["Fecha"] = df["Fecha"] + "/" + found_year
     else:
         df = pd.DataFrame(columns=["Fecha", "Tipo de movimiento", "Monto", "Descripcion", "x_monto"])
 
+    # 4) Clasificar cada transacción según el promedio de coordenadas
     def clasificar_por_coordenadas(row):
         x_val = row["x_monto"] if pd.notnull(row["x_monto"]) else 0
         if x_val >= UPPER_LIMIT:
@@ -125,7 +151,8 @@ def parsear_pdf_a_df(pdf_file, password=None):
         elif x_val <= LOWER_LIMIT:
             return "CARGO"
         else:
-            return "CARGO"  # O ajusta según lo que necesites
+            # Puedes ajustar esta lógica; por defecto se forzará a "CARGO"
+            return "CARGO"
 
     if not df.empty:
         df["Categoría"] = df.apply(clasificar_por_coordenadas, axis=1)
@@ -133,7 +160,7 @@ def parsear_pdf_a_df(pdf_file, password=None):
 
     return df, sheet_name
 
-# --- Función principal de la aplicación ---
+# --- Función principal de la aplicación Streamlit ---
 def main():
     st.title("Lector de Estados de Cuenta")
     st.write("Sube uno o varios PDFs (o una carpeta en navegadores compatibles) y genera un Excel con una hoja por cada PDF.")
@@ -181,3 +208,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
